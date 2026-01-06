@@ -51,19 +51,36 @@ class XiaoHongShuLogin(AbstractLogin):
     @retry(stop=stop_after_attempt(600), wait=wait_fixed(1), retry=retry_if_result(lambda value: value is False))
     async def check_login_state(self, no_logged_in_session: str) -> bool:
         """
-            Check if the current login status is successful and return True otherwise return False
-            retry decorator will retry 20 times if the return value is False, and the retry interval is 1 second
-            if max retry times reached, raise RetryError
+        通过页面元素和 Cookie 双重校验登录状态
         """
+        # 1. 优先检查页面是否出现了“我”这个侧边栏节点
+        try:
+            # 使用包含“我”文字且链接包含 profile 的选择器
+            # XPath 解释：找到文本为“我”且父级链接包含 /user/profile/ 的元素
+            user_profile_selector = "xpath=//a[contains(@href, '/user/profile/')]//span[text()='我']"
+            
+            # 设置一个较短的超时，因为 retry 会循环调用
+            is_visible = await self.context_page.is_visible(user_profile_selector, timeout=500)
+            if is_visible:
+                utils.logger.info("[XiaoHongShuLogin.check_login_state] Login status confirmed by UI element ('Me' button).")
+                return True
+        except Exception:
+            pass
 
+        # 2. 备选方案：检查验证码提示
         if "请通过验证" in await self.context_page.content():
-            utils.logger.info("[XiaoHongShuLogin.check_login_state] CAPTCHA appeared during login, please verify manually")
+            utils.logger.info("[XiaoHongShuLogin.check_login_state] CAPTCHA appeared, please verify manually.")
 
+        # 3. 兼容方案：原来的 Cookie 变化判定
         current_cookie = await self.browser_context.cookies()
         _, cookie_dict = utils.convert_cookies(current_cookie)
         current_web_session = cookie_dict.get("web_session")
-        if current_web_session != no_logged_in_session:
+        
+        # 如果 web_session 发生了变化，也认为登录成功
+        if current_web_session and current_web_session != no_logged_in_session:
+            utils.logger.info("[XiaoHongShuLogin.check_login_state] Login status confirmed by Cookie (web_session changed).")
             return True
+
         return False
 
     async def begin(self):
